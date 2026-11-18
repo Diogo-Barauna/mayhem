@@ -5,6 +5,12 @@ App para Windows que lê a tela durante o **ARAM: Mayhem** do League of Legends,
 
 ## Como usar
 
+**Executável:** dê dois cliques em `MayhemAugmentHelper-<versão>-portable.exe`. Não precisa instalar.
+O executável não tem assinatura digital, então na primeira vez o Windows SmartScreen pode mostrar
+"O Windows protegeu o computador". Clique em **Mais informações** e depois em **Executar assim mesmo**.
+
+**Pelo código-fonte:**
+
 ```bash
 npm install
 npm start
@@ -61,7 +67,7 @@ As duas fontes usam os mesmos IDs de augment da Riot, então os dados se cruzam 
 O op.gg pesa até 50%, e menos quando o pick rate é baixo (amostra pequena). Entradas do op.gg com pick rate 0
 são ignoradas, porque são placeholders sem jogos.
 
-Os dados ficam em cache por 6 h em `%APPDATA%/mayhem-augment-helper/cache` (2 requisições por campeão). Se você
+Os dados ficam em cache por 6 h em `%APPDATA%/Mayhem Augment Helper/cache` (2 requisições por campeão). Se você
 estiver sem internet ou o site estiver fora do ar, o app usa o cache antigo.
 
 > ⚠️ Esses endpoints não são APIs públicas documentadas e podem mudar sem aviso. Se uma fonte quebrar, o app
@@ -88,7 +94,25 @@ src/matcher.js    casa o texto do OCR com os nomes dos augments
 src/renderer/     janela principal
 src/overlay/      overlay transparente sobre o jogo
 test/             testes unitários, teste ponta a ponta e o print usado nele
+build/icon.png    ícone do app
 ```
+
+## Gerar o executável
+
+```bash
+npm run dist
+```
+
+O comando gera `dist/MayhemAugmentHelper-<versão>-portable.exe` (~80 MB, com o Electron embutido). Os dados de
+idioma do OCR não vão no executável: são baixados no primeiro uso (~15 MB) e ficam em `%APPDATA%/Mayhem Augment Helper/tessdata`.
+
+Para conferir o executável sem abrir o jogo, rode-o com estas variáveis de ambiente. Ele renderiza as janelas
+fora da tela, lê o print e grava `ocr.json` com as cartas encontradas:
+`MAYHEM_SNAPSHOT=<pasta>` e `MAYHEM_SNAPSHOT_OCR=test/fixtures/cartas-warwick-1080p.webp`.
+
+> Se o build falhar com "Cannot create symbolic link" ao extrair o `winCodeSign`, ative o Modo de
+> Desenvolvedor do Windows ou extraia o `.7z` de `%LOCALAPPDATA%/electron-builder/Cache/winCodeSign` para uma
+> pasta `winCodeSign-2.6.0` no mesmo lugar. Os erros dos dois arquivos de macOS podem ser ignorados.
 
 ## Testes
 

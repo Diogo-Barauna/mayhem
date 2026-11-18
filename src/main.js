@@ -478,6 +478,26 @@ async function snapshotMode(outDir) {
   ov.webContents.send('cards', { champion: state.champion, cards });
   await wait(1200);
   fs.writeFileSync(path.join(outDir, 'overlay.png'), (await ov.webContents.capturePage()).toPNG());
+
+  // Verifica o OCR de ponta a ponta (útil para testar o executável empacotado).
+  if (process.env.MAYHEM_SNAPSHOT_OCR) {
+    const result = { ok: false };
+    try {
+      const full = await loadImageFile(process.env.MAYHEM_SNAPSHOT_OCR);
+      const size = full.getSize();
+      const reg = settings.region;
+      const rect = { x: Math.round(size.width * reg.x), y: Math.round(size.height * reg.y), width: Math.round(size.width * reg.w), height: Math.round(size.height * reg.h) };
+      const t = Date.now();
+      const { lines } = await ocrImage(full.crop(rect), size.height);
+      result.ms = Date.now() - t;
+      result.cards = matcher.match(lines, { frameHeight: size.height }).map((m) => store.augments[m.id].namePt);
+      result.ok = true;
+    } catch (e) {
+      result.error = e.stack;
+    }
+    fs.writeFileSync(path.join(outDir, 'ocr.json'), JSON.stringify(result, null, 2));
+  }
+  if (ocrWorker) await ocrWorker.terminate().catch(() => {});
   app.exit(0);
 }
 

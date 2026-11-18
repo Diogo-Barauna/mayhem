@@ -6,16 +6,50 @@
   "scripts": {
     "start": "electron .",
     "test": "node test/run-tests.js",
-    "test:e2e": "electron test/e2e-electron.js"
+    "test:e2e": "electron test/e2e-electron.js",
+    "dist": "electron-builder --win portable"
   },
   "license": "MIT",
   "dependencies": {
     "tesseract.js": "^6.0.1"
   },
   "devDependencies": {
-    "electron": "^33.4.11"
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
   },
   "allowScripts": {
     "electron@33.4.11": true
+  },
+  "productName": "Mayhem Augment Helper",
+  "author": "Diogo Barauna",
+  "build": {
+    "appId": "com.mayhem.augmenthelper",
+    "productName": "Mayhem Augment Helper",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/tesseract.js/**",
+      "node_modules/tesseract.js-core/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "portable": {
+      "artifactName": "MayhemAugmentHelper-${version}-portable.exe"
+    }
   }
 }
