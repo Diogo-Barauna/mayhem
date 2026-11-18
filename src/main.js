@@ -4,7 +4,7 @@ const fs = require('fs');
 const https = require('https');
 const { DataStore, scoreToTier } = require('./data');
 const { AugmentMatcher } = require('./matcher');
-const { createOcrWorker, recognize, DEFAULT_REGION } = require('./ocr');
+const { createOcrWorker, recognize, upscaleFor, DEFAULT_REGION } = require('./ocr');
 
 let mainWin = null;
 let overlayWin = null;
@@ -139,8 +139,8 @@ async function getOcr() {
   return ocrWorker;
 }
 
-async function ocrImage(img) {
-  return recognize(await getOcr(), img.toPNG());
+async function ocrImage(img, frameHeight) {
+  return recognize(await getOcr(), img, { scale: upscaleFor(frameHeight) });
 }
 
 // ---------------- captura ----------------
@@ -201,7 +201,7 @@ async function scanOnce() {
     if (settings.saveDebugCapture) {
       fs.writeFileSync(path.join(app.getPath('userData'), 'ultima-captura.png'), cap.img.toPNG());
     }
-    const { lines } = await ocrImage(cap.img);
+    const { lines } = await ocrImage(cap.img, cap.full.height);
     const matches = matcher.match(lines, { frameHeight: cap.full.height });
     if (matches.length >= 2) {
       state.misses = 0;
@@ -427,7 +427,7 @@ ipcMain.handle('test-image', async () => {
   const reg = settings.region;
   const rect = { x: Math.round(fs_.width * reg.x), y: Math.round(fs_.height * reg.y), width: Math.round(fs_.width * reg.w), height: Math.round(fs_.height * reg.h) };
   status('Lendo imagem de teste…');
-  const { lines, text } = await ocrImage(full.crop(rect));
+  const { lines, text } = await ocrImage(full.crop(rect), fs_.height);
   const matches = matcher.match(lines, { frameHeight: fs_.height });
   const cards = buildCards(matches, { offsetX: rect.x, offsetY: rect.y });
   const noChamp = state.champion ? '' : ' (sem partida em andamento: mostrando só os nomes, sem ranking)';

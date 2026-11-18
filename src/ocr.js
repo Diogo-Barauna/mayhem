@@ -56,10 +56,23 @@ function wordsToLines(data) {
   return lines;
 }
 
-// image: Buffer PNG
-async function recognize(worker, image) {
-  const { data } = await worker.recognize(image, {}, { blocks: true, text: true });
-  return { lines: wordsToLines(data), text: data.text };
+// Fator de ampliação antes do OCR. A fonte dos títulos é fina: ampliar 1,5x em 1080p fez o OCR
+// acertar "Corpo Celestial" (sem ampliar, leu "ão Celestial").
+function upscaleFor(screenHeight) {
+  return Math.min(2, Math.max(1, (1.5 * 1080) / screenHeight));
 }
 
-module.exports = { createOcrWorker, wordsToLines, recognize, DEFAULT_REGION };
+// img: NativeImage (recorte). Devolve linhas com bbox nas coordenadas do recorte ORIGINAL.
+async function recognize(worker, img, { scale = 1 } = {}) {
+  const src = scale > 1.01 ? img.resize({ width: Math.round(img.getSize().width * scale), quality: 'best' }) : img;
+  const { data } = await worker.recognize(src.toPNG(), {}, { blocks: true, text: true });
+  const lines = wordsToLines(data);
+  if (scale > 1.01) {
+    for (const l of lines) for (const w of l.words) {
+      w.bbox = { x0: w.bbox.x0 / scale, y0: w.bbox.y0 / scale, x1: w.bbox.x1 / scale, y1: w.bbox.y1 / scale };
+    }
+  }
+  return { lines, text: data.text };
+}
+
+module.exports = { createOcrWorker, wordsToLines, recognize, upscaleFor, DEFAULT_REGION };

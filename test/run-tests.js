@@ -10,6 +10,8 @@ const augments = {
   1048: { id: '1048', names: ['Jeweled Gauntlet', 'Manopla Cravejada'] },
   1238: { id: '1238', names: ['Transmute: Prismatic', 'Transmutar: Prismático'] },
   9999: { id: '9999', names: ['BEES!!!', 'ABELHAS!!!'] },
+  1400: { id: '1400', names: ['Celestial Body', 'Corpo Celestial'] },
+  1500: { id: '1500', names: ['Resilience', 'Resiliência Total'] },
 };
 const m = new AugmentMatcher(augments);
 const w = (text, x0, y0, wid = text.length * 12, h = 22) => ({ text, bbox: { x0, y0, x1: x0 + wid, y1: y0 + h } });
@@ -35,6 +37,17 @@ t('ignora nome citado na descrição (altura diferente)', () => {
   ];
   const r = m.match(lines, { frameHeight: 1080 });
   assert.deepStrictEqual(r.map((x) => x.id), ['1068', '1030', '1238']);
+});
+
+t('recupera carta com uma palavra errada pelo OCR ("ão Celestial")', () => {
+  const lines = [
+    { words: [w('Transmutar:', 480, 433), w('Prismático', 620, 433)] },
+    { words: [w('ão', 888, 434), w('Celestial', 925, 434)] },
+    { words: [w('Recursão', 1285, 433)] },
+    { words: [w('Resiliência', 930, 462)] }, // tag da carta, mais abaixo: não pode virar carta
+  ];
+  const r = m.match(lines, { frameHeight: 1080 });
+  assert.deepStrictEqual(r.map((x) => x.id), ['1238', '1400', '1068']);
 });
 
 t('não casa texto aleatório', () => {

@@ -6,7 +6,7 @@ const os = require('os');
 const fs = require('fs');
 const { DataStore } = require('../src/data');
 const { AugmentMatcher, normalize } = require('../src/matcher');
-const { createOcrWorker, recognize, DEFAULT_REGION } = require('../src/ocr');
+const { createOcrWorker, recognize, upscaleFor, DEFAULT_REGION } = require('../src/ocr');
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'cartas-warwick-1080p.webp');
 const EXPECTED = ['Transmutar: Prismático', 'Corpo Celestial', 'Recursão'];
@@ -29,30 +29,25 @@ app.whenReady().then(async () => {
   let code = 0;
   try {
     const tmp = path.join(os.tmpdir(), 'mayhem-e2e');
-    log('inicio');
     const store = new DataStore(path.join(tmp, 'cache'));
     await store.init();
     const matcher = new AugmentMatcher(store.augments);
-    log('dados ok');
     const img = await loadImage(FIXTURE);
-    log('imagem ok', JSON.stringify(img.getSize()));
     const sz = img.getSize();
     const r = DEFAULT_REGION;
     const crop = img.crop({ x: Math.round(sz.width * r.x), y: Math.round(sz.height * r.y), width: Math.round(sz.width * r.w), height: Math.round(sz.height * r.h) });
     const worker = await createOcrWorker(path.join(tmp, 'tessdata'));
-    log('ocr ok');
-    await recognize(worker, crop.toPNG()); // aquecimento
+    await recognize(worker, crop, { scale: upscaleFor(sz.height) }); // aquecimento
     const times = [];
     let matches = [];
     for (let i = 0; i < 3; i++) {
       const t = Date.now();
-      const { lines } = await recognize(worker, crop.toPNG());
+      const { lines } = await recognize(worker, crop, { scale: upscaleFor(sz.height) });
       times.push(Date.now() - t);
       matches = matcher.match(lines, { frameHeight: sz.height });
     }
     await worker.terminate();
 
-    log('ocr feito');
     // Custo da captura de tela (só em memória, nada é salvo).
     const d = screen.getPrimaryDisplay();
     const t0 = Date.now();

@@ -55,6 +55,26 @@ class AugmentMatcher {
       }
     }
     this.maxWords = Math.max(1, ...this.entries.map((e) => e.words)) + 1;
+    // Palavras longas que aparecem no nome de UM só augment (ex.: "celestial" -> Corpo Celestial).
+    const idx = new Map();
+    for (const e of this.entries) {
+      for (const w of e.norm.split(' ')) {
+        if (w.length < 6) continue;
+        if (!idx.has(w)) idx.set(w, new Set());
+        idx.get(w).add(e.id);
+      }
+    }
+    this.distinctWords = [...idx.entries()].filter(([, ids]) => ids.size === 1).map(([w, ids]) => ({ w, id: [...ids][0] }));
+  }
+
+  bestDistinctWord(word) {
+    let best = null;
+    for (const d of this.distinctWords) {
+      if (Math.abs(d.w.length - word.length) > 2) continue;
+      const s = similarity(word, d.w);
+      if (s >= 0.85 && (!best || s > best.score)) best = { id: d.id, score: s };
+    }
+    return best;
   }
 
   bestFor(text) {
@@ -71,6 +91,7 @@ class AugmentMatcher {
   // Retorna [{id, score, bbox}] ordenado da esquerda p/ direita (cartas 1..3).
   match(lines, { frameHeight = 1080 } = {}) {
     const found = [];
+    const leftovers = []; // palavras que não entraram em nenhum nome completo
     for (const line of lines) {
       const words = (line.words || [])
         .map((w) => ({ ...w, norm: normalize(w.text) }))
@@ -105,18 +126,35 @@ class AugmentMatcher {
           },
         });
       }
+      words.forEach((w, k) => { if (!used.has(k)) leftovers.push(w); });
     }
     if (!found.length) return [];
 
     // Os títulos das cartas ficam na mesma altura. Agrupa por Y e fica com o maior grupo
     // (descarta nomes de augments citados dentro de descrições).
-    const tol = frameHeight * 0.04;
+    // Tolerância apertada: os títulos ficam na mesma altura e a tag da carta (ex.: "Resiliência")
+    // fica ~2,5% da tela abaixo; com folga maior ela entraria no grupo.
+    const tol = Math.max(8, frameHeight * 0.015);
     let bestGroup = [];
     for (const f of found) {
       const cy = (f.bbox.y0 + f.bbox.y1) / 2;
       const group = found.filter((g) => Math.abs((g.bbox.y0 + g.bbox.y1) / 2 - cy) <= tol);
       const sum = (arr) => arr.reduce((s, x) => s + x.score, 0);
       if (group.length > bestGroup.length || (group.length === bestGroup.length && sum(group) > sum(bestGroup))) bestGroup = group;
+    }
+    // Recuperação: se faltou carta, procura na MESMA altura dos títulos já reconhecidos uma palavra
+    // distintiva de um nome (o OCR às vezes erra só uma palavra, ex.: "ão Celestial").
+    if (bestGroup.length > 0 && bestGroup.length < 3) {
+      const cys = bestGroup.map((g) => (g.bbox.y0 + g.bbox.y1) / 2).sort((a, b) => a - b);
+      const titleY = cys[Math.floor(cys.length / 2)];
+      const tight = Math.max(6, frameHeight * 0.015);
+      const overlaps = (b) => bestGroup.some((g) => b.x0 < g.bbox.x1 && b.x1 > g.bbox.x0);
+      for (const w of leftovers) {
+        if (bestGroup.length >= 3) break;
+        if (w.norm.length < 6 || Math.abs((w.bbox.y0 + w.bbox.y1) / 2 - titleY) > tight || overlaps(w.bbox)) continue;
+        const d = this.bestDistinctWord(w.norm.replace(/ /g, ''));
+        if (d && !bestGroup.some((g) => g.id === d.id)) bestGroup.push({ id: d.id, score: 0.7 * d.score, bbox: { ...w.bbox } });
+      }
     }
     // Remove duplicados (mesmo augment lido duas vezes) e limita a 3 cartas.
     const byId = new Map();
