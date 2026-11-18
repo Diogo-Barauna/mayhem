@@ -153,7 +153,7 @@ class AugmentMatcher {
         if (bestGroup.length >= 3) break;
         if (w.norm.length < 6 || Math.abs((w.bbox.y0 + w.bbox.y1) / 2 - titleY) > tight || overlaps(w.bbox)) continue;
         const d = this.bestDistinctWord(w.norm.replace(/ /g, ''));
-        if (d && !bestGroup.some((g) => g.id === d.id)) bestGroup.push({ id: d.id, score: 0.7 * d.score, bbox: { ...w.bbox } });
+        if (d && !bestGroup.some((g) => g.id === d.id)) bestGroup.push({ id: d.id, score: 0.7 * d.score, bbox: { ...w.bbox }, partial: true });
       }
     }
     // Remove duplicados (mesmo augment lido duas vezes) e limita a 3 cartas.

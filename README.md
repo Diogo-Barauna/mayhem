@@ -18,7 +18,8 @@ npm start
 
 1. Abra o app e deixe-o aberto (pode minimizar). **Não é preciso escolher campeão.** Quando a partida carrega,
    o app descobre o seu campeão pela Live Client Data API da Riot (`https://127.0.0.1:2999`, local e oficial),
-   baixa os dados dele e começa a ler a tela. Quando a partida acaba, ele para de ler e volta a aguardar.
+   baixa os dados dele e começa a ler a tela. Quando a partida acaba, ele **limpa tudo** (campeão, cartas,
+   overlay) e volta a aguardar. Na partida seguinte, recomeça do zero com o novo campeão.
    Em modos que não têm as cartas do Mayhem (Summoner's Rift, Arena e outros) a tela não é lida.
 2. Jogue com o LoL em **Tela cheia sem bordas (Borderless)** ou **Janela**. Em tela cheia exclusiva o
    Windows não deixa sobrepor janelas, e a captura pode sair preta.
@@ -126,6 +127,18 @@ npm run test:e2e
 
 O teste ponta a ponta usa um print real da tela de cartas (`test/fixtures/cartas-warwick-1080p.webp`). Ele
 recorta a faixa padrão, roda o OCR de verdade, confere as 3 cartas e mostra o tempo de cada leitura.
+
+## Ciclo de partidas e diagnóstico
+
+- **Início de partida:** a Live Client API responde com o seu jogador. O campeão é identificado por
+  `rawChampionName`, que vem em formatos diferentes conforme o campeão (`game_character_displayname_Lissandra`
+  ou `Character_Aatrox_Name`), com `rawSkinName` e `championName` como alternativas.
+- **Fim de partida:** 2 consultas seguidas sem resposta (~6 s).
+- **Partida nova sem fim detectado:** também é reconhecida quando o campeão ou o modo mudam, ou quando o
+  `gameTime` volta para trás.
+- Os downloads de dados têm timeout de 10 s e não bloqueiam a detecção das partidas.
+- **Log:** `%APPDATA%/Mayhem Augment Helper/app.log` (Configurações → Abrir pasta de dados) registra partidas
+  detectadas e encerradas, campeões carregados e erros. Se algo der errado numa partida, mande esse arquivo.
 
 ## Limitações conhecidas
 

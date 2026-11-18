@@ -23,12 +23,22 @@ function nums(a) {
   return parts.join(' · ');
 }
 
+// HTML original do bloco "Aguardando partida", restaurado quando a partida termina.
+let waitingHtml = null;
+
 function renderChampion() {
   const box = $('champ');
+  if (waitingHtml === null) waitingHtml = box.innerHTML;
   const hasChamp = !!current;
   document.querySelector('.list-head').classList.toggle('hidden', !hasChamp);
   $('augList').classList.toggle('hidden', !hasChamp);
-  if (!hasChamp) return;
+  if (!hasChamp) {
+    box.className = 'champ empty';
+    box.innerHTML = waitingHtml;
+    $('augList').innerHTML = '';
+    $('filter').value = '';
+    return;
+  }
   const c = current.champion;
   const src = [current.sources.blitz && 'Blitz.gg', current.sources.opgg && 'op.gg'].filter(Boolean).join(' + ');
   box.className = 'champ';
@@ -125,9 +135,15 @@ document.addEventListener('error', (e) => {
   window.api.on('status', setStatus);
   window.api.on('game', setGame);
   window.api.on('champion', (c) => { current = c; renderChampion(); });
-  window.api.on('cards', ({ cards }) => {
+  window.api.on('cards', (p) => {
+    // null = partida encerrada: limpa as últimas cartas.
+    if (!p || !p.cards) {
+      $('lastCards').classList.add('hidden');
+      $('lastCardsList').innerHTML = '';
+      return;
+    }
     $('lastCards').classList.remove('hidden');
-    renderCards($('lastCardsList'), cards);
+    renderCards($('lastCardsList'), p.cards);
   });
 
   $('filter').addEventListener('input', renderList);

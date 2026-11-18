@@ -4,6 +4,8 @@ const fs = require('fs');
 const https = require('https');
 const { DataStore, scoreToTier } = require('./data');
 const { AugmentMatcher } = require('./matcher');
+const { CardTracker } = require('./tracker');
+const { GameWatcher, championCandidates } = require('./game-watcher');
 const { createOcrWorker, recognize, upscaleFor, DEFAULT_REGION } = require('./ocr');
 
 let mainWin = null;
@@ -11,6 +13,7 @@ let overlayWin = null;
 let store = null;
 let matcher = null;
 let ocrWorker = null;
+const tracker = new CardTracker();
 
 const state = {
   champion: null, // {key,id,name,icon}
@@ -18,15 +21,30 @@ const state = {
   sources: {},
   running: false,
   busy: false,
-  misses: 0,
   lastCards: '',
   timer: null,
   paused: false, // pausado pelo usuário
   inGame: false,
   gameMode: null,
-  gameMisses: 0,
   gameTimer: null,
+  session: 0, // incrementa a cada partida: cargas de dados de uma partida antiga são descartadas
 };
+let watcher = null;
+
+// Testes podem isolar configurações, cache e log numa pasta própria.
+if (process.env.MAYHEM_USERDATA) app.setPath('userData', process.env.MAYHEM_USERDATA);
+
+// ---------------- log de diagnóstico ----------------
+// %APPDATA%/Mayhem Augment Helper/app.log (o botão "Abrir pasta de dados" leva até ele).
+function log(...parts) {
+  try {
+    const file = path.join(app.getPath('userData'), 'app.log');
+    if (fs.existsSync(file) && fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, file + '.old');
+    const line = parts.map((p) => (typeof p === 'string' ? p : JSON.stringify(p))).join(' ');
+    fs.appendFileSync(file, `[${new Date().toISOString()}] ${line}
+`);
+  } catch (_) { /* log nunca pode derrubar o app */ }
+}
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 const SETTINGS_VERSION = 2;
@@ -163,8 +181,20 @@ async function captureRegion() {
   return { img: full.crop(rect), rect, full: fs_, scale: fs_.width / d.bounds.width };
 }
 
-function buildCards(matches, { offsetX = 0, offsetY = 0, scale = 1 } = {}) {
-  const ranked = matches
+// Converte matches de UMA leitura (bbox no recorte) em cartas no formato do tracker (centro no quadro).
+function matchesToFrame(matches, offsetX = 0, offsetY = 0) {
+  return matches.map((m) => ({
+    ...m,
+    bbox: { x0: m.bbox.x0 + offsetX, y0: m.bbox.y0 + offsetY, x1: m.bbox.x1 + offsetX, y1: m.bbox.y1 + offsetY },
+    cx: (m.bbox.x0 + m.bbox.x1) / 2 + offsetX,
+    cy: (m.bbox.y0 + m.bbox.y1) / 2 + offsetY,
+  }));
+}
+
+// cards: [{id, cx, cy, score}] em pixels do quadro. O ranking é calculado sobre TODAS as cartas recebidas
+// (as da sessão inteira, vindas do tracker), nunca só sobre as que a última leitura achou.
+function buildCards(cards, { scale = 1 } = {}) {
+  const ranked = cards
     .map((m) => {
       const aug = store.augments[m.id] || { name: `#${m.id}`, namePt: `#${m.id}` };
       const st = state.stats[m.id] || {};
@@ -179,13 +209,8 @@ function buildCards(matches, { offsetX = 0, offsetY = 0, scale = 1 } = {}) {
         opggPerf: st.opggPerf ?? null,
         opggPick: st.opggPick ?? null,
         ocrConfidence: Math.round(m.score * 100),
-        // posição em pixels lógicos (DIP) da tela, para o overlay
-        box: {
-          x: (m.bbox.x0 + offsetX) / scale,
-          y: (m.bbox.y0 + offsetY) / scale,
-          w: (m.bbox.x1 - m.bbox.x0) / scale,
-          h: (m.bbox.y1 - m.bbox.y0) / scale,
-        },
+        // centro do título em pixels lógicos (DIP) da tela, para o overlay
+        anchor: { x: m.cx / scale, y: m.cy / scale },
       };
     });
   const order = [...ranked].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
@@ -196,30 +221,35 @@ function buildCards(matches, { offsetX = 0, offsetY = 0, scale = 1 } = {}) {
 async function scanOnce() {
   if (state.busy || !state.champion) return;
   state.busy = true;
+  const session = state.session;
   try {
     const cap = await captureRegion();
     if (settings.saveDebugCapture) {
       fs.writeFileSync(path.join(app.getPath('userData'), 'ultima-captura.png'), cap.img.toPNG());
     }
     const { lines } = await ocrImage(cap.img, cap.full.height);
+    // A partida acabou (ou o scan foi pausado) enquanto o OCR rodava: descarta esta leitura.
+    if (session !== state.session || !state.running) return;
     const matches = matcher.match(lines, { frameHeight: cap.full.height });
-    if (matches.length >= 2) {
-      state.misses = 0;
-      const cards = buildCards(matches, { offsetX: cap.rect.x, offsetY: cap.rect.y, scale: cap.scale });
-      const sig = cards.map((c) => c.id).join(',');
-      showOverlay({ champion: state.champion, cards });
-      if (sig !== state.lastCards) {
-        state.lastCards = sig;
-        send('cards', { champion: state.champion, cards, at: Date.now() });
-        status(`Cartas detectadas: ${cards.map((c) => c.name).join(' · ')}`, 'ok');
-      }
-    } else if (++state.misses >= 1) {
-      // A leitura é rápida (~0,4 s): uma leitura sem cartas já basta para esconder.
+    // O tracker mantém as cartas entre leituras: uma leitura que perde uma carta não faz o selo piscar.
+    const r = tracker.update(matchesToFrame(matches, cap.rect.x, cap.rect.y), cap.full);
+    if (!r.changed) return;
+    if (!r.visible) {
       state.lastCards = '';
       hideOverlay();
+      return;
+    }
+    const cards = buildCards(r.cards, { scale: cap.scale });
+    showOverlay({ champion: state.champion, cards, screenH: cap.full.height / cap.scale });
+    const sig = cards.map((c) => c.id).join(',');
+    if (sig !== state.lastCards) {
+      state.lastCards = sig;
+      send('cards', { champion: state.champion, cards, at: Date.now() });
+      status(`Cartas detectadas: ${cards.map((c) => c.name).join(' · ')}`, 'ok');
     }
   } catch (err) {
     status(`Erro na leitura: ${err.message}`, 'error');
+    log('erro na leitura:', err.message);
   } finally {
     state.busy = false;
   }
@@ -227,8 +257,9 @@ async function scanOnce() {
 
 function startScanning() {
   if (state.running) return;
+  if (process.env.MAYHEM_SNAPSHOT) return; // modo de teste: nunca captura a tela do usuário
   state.running = true;
-  state.misses = 0;
+  tracker.reset();
   getOcr().catch((e) => status(`Falha ao iniciar OCR: ${e.message}`, 'error'));
   const loop = async () => {
     if (!state.running) return;
@@ -242,6 +273,8 @@ function startScanning() {
 function stopScanning() {
   state.running = false;
   clearTimeout(state.timer);
+  tracker.reset();
+  state.lastCards = '';
   hideOverlay();
   sendGameState();
 }
@@ -255,8 +288,16 @@ async function loadChampion(query) {
   const champ = store.findChampion(query);
   if (!champ) throw new Error(`Campeão não reconhecido: ${query}`);
   if (state.champion && state.champion.key === champ.key && Object.keys(state.stats).length) return publicChampState();
+  const session = state.session;
   status(`Partida detectada: ${champ.name}. Baixando dados…`);
+  const t0 = Date.now();
   const { stats, sources } = await store.championStats(champ);
+  if (session !== state.session) {
+    // A partida mudou enquanto os dados baixavam: descarta.
+    log('carga descartada (partida mudou):', champ.name);
+    return null;
+  }
+  log('campeão carregado:', champ.name, { blitz: sources.blitz, opgg: sources.opgg, augments: Object.keys(stats).length, ms: Date.now() - t0 });
   state.champion = champ;
   state.stats = stats;
   state.sources = sources;
@@ -292,7 +333,8 @@ function publicChampState() {
 function liveClientGet(p) {
   return new Promise((resolve, reject) => {
     const req = https.get(
-      { host: '127.0.0.1', port: 2999, path: p, rejectUnauthorized: false, timeout: 1500 },
+      // Porta oficial 2999; MAYHEM_LIVE_PORT só para testes com servidor falso.
+      { host: '127.0.0.1', port: Number(process.env.MAYHEM_LIVE_PORT) || 2999, path: p, rejectUnauthorized: false, timeout: 1500 },
       (res) => {
         let body = '';
         res.on('data', (d) => (body += d));
@@ -314,44 +356,81 @@ async function detectGame() {
   const players = data.allPlayers || [];
   const player = players.find((p) => (p.riotId || p.summonerName) === myId);
   if (!player) return null; // tela de carregamento: dados ainda incompletos
-  const raw = (player.rawChampionName || '').replace('game_character_displayname_', '');
-  return { champion: raw || player.championName, gameMode: (data.gameData && data.gameData.gameMode) || '' };
+  const candidates = championCandidates(player);
+  // Usa o primeiro candidato que corresponde a um campeão conhecido (ID do Data Dragon).
+  const known = candidates.map((c) => store.findChampion(c)).find(Boolean);
+  const gd = data.gameData || {};
+  return {
+    champion: known ? known.id : candidates[0] || '?',
+    candidates,
+    gameMode: gd.gameMode || '',
+    gameTime: typeof gd.gameTime === 'number' ? gd.gameTime : null,
+  };
 }
 
 // Modos que certamente não têm as cartas do Mayhem: não gasta CPU lendo a tela neles.
 const MODES_WITHOUT_MAYHEM_CARDS = new Set(['CLASSIC', 'CHERRY', 'TUTORIAL', 'PRACTICETOOL']);
 
-async function gameTick() {
-  try {
-    const g = await detectGame();
-    if (!g) return;
-    state.gameMisses = 0;
-    if (!state.inGame || state.gameMode !== g.gameMode) {
-      state.inGame = true;
-      state.gameMode = g.gameMode;
-      sendGameState();
-    }
-    await loadChampion(g.champion);
-    const scanMode = !MODES_WITHOUT_MAYHEM_CARDS.has(g.gameMode);
-    if (scanMode && !state.paused && !state.running) startScanning();
-    if (!scanMode && state.running) stopScanning();
-    if (!scanMode) status(`Partida em modo ${g.gameMode}: não é ARAM Mayhem, a tela não será lida.`);
-  } catch (_) {
-    // Sem partida em andamento (ou o jogo ainda carregando).
-    if (state.inGame && ++state.gameMisses >= 2) {
-      state.inGame = false;
-      state.gameMode = null;
-      state.lastCards = '';
-      stopScanning();
-      status('Partida encerrada. Aguardando a próxima…');
-    }
+// Limpa TUDO da partida anterior: campeão, estatísticas, cartas, overlay e a janela principal.
+function resetSession() {
+  state.session++;
+  stopScanning();
+  state.champion = null;
+  state.stats = {};
+  state.sources = {};
+  state.lastCards = '';
+  state.inGame = false;
+  state.gameMode = null;
+  send('champion', null);
+  send('cards', null);
+  sendGameState();
+}
+
+const isScanMode = (mode) => !MODES_WITHOUT_MAYHEM_CARDS.has(mode);
+
+function maybeStartScanning() {
+  if (state.inGame && isScanMode(state.gameMode) && !state.paused && !state.running) startScanning();
+}
+
+function onGameStart(game) {
+  resetSession();
+  log('partida detectada:', game);
+  state.inGame = true;
+  state.gameMode = game.gameMode;
+  sendGameState();
+  if (isScanMode(game.gameMode)) {
+    // Começa a ler já (o OCR aquece enquanto os dados baixam); scanOnce só mostra selos com o campeão carregado.
+    maybeStartScanning();
+  } else {
+    status(`Partida em modo ${game.gameMode}: não é ARAM Mayhem, a tela não será lida.`);
   }
+  // Não bloqueia o watcher: se o download demorar, o fim/início das próximas partidas continua sendo detectado.
+  loadChampion(game.champion).catch((err) => {
+    log('erro ao carregar campeão:', game.champion, err.message);
+    status(`Erro ao carregar ${game.champion}: ${err.message}`, 'error');
+  });
+}
+
+function onGameEnd(game) {
+  log('partida encerrada:', game);
+  resetSession();
+  status('Partida encerrada. Aguardando a próxima…');
 }
 
 function startGameWatcher() {
-  clearInterval(state.gameTimer);
-  state.gameTimer = setInterval(gameTick, 3000);
-  gameTick();
+  clearTimeout(state.gameTimer);
+  watcher = new GameWatcher({
+    detect: detectGame,
+    onGameStart,
+    onGameEnd,
+    onError: (err) => log('erro no ciclo de partidas:', err.message),
+  });
+  // setTimeout encadeado: o próximo tick só é agendado quando o anterior termina.
+  const loop = async () => {
+    try { await watcher.tick(); } catch (err) { log('erro no tick:', err.message); }
+    state.gameTimer = setTimeout(loop, 3000);
+  };
+  loop();
 }
 
 // ---------------- IPC ----------------
@@ -375,7 +454,7 @@ ipcMain.handle('toggle-pause', () => {
   } else {
     sendGameState();
     status(state.inGame ? 'Retomado.' : 'Retomado. Aguardando uma partida…');
-    gameTick();
+    maybeStartScanning();
   }
   return state.paused;
 });
@@ -405,7 +484,8 @@ async function loadImageFile(file) {
   if (!img.isEmpty()) return img;
   const b64 = fs.readFileSync(file).toString('base64');
   const ext = path.extname(file).slice(1).toLowerCase().replace('jpg', 'jpeg');
-  const probe = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  // enableLargerThanScreen: sem isso a janela é limitada à área de trabalho e um print 1080p sai cortado.
+  const probe = new BrowserWindow({ show: false, useContentSize: true, enableLargerThanScreen: true, webPreferences: { offscreen: true } });
   await probe.loadURL(`data:text/html,<body style="margin:0"><img id="i" src="data:image/${ext};base64,${b64}"></body>`);
   const { w, h } = await probe.webContents.executeJavaScript("new Promise(r=>{const i=document.getElementById('i');const f=()=>r({w:i.naturalWidth,h:i.naturalHeight});i.complete?f():i.onload=f})");
   probe.setContentSize(w, h);
@@ -429,7 +509,7 @@ ipcMain.handle('test-image', async () => {
   status('Lendo imagem de teste…');
   const { lines, text } = await ocrImage(full.crop(rect), fs_.height);
   const matches = matcher.match(lines, { frameHeight: fs_.height });
-  const cards = buildCards(matches, { offsetX: rect.x, offsetY: rect.y });
+  const cards = buildCards(matchesToFrame(matches, rect.x, rect.y));
   const noChamp = state.champion ? '' : ' (sem partida em andamento: mostrando só os nomes, sem ranking)';
   status(matches.length ? `Teste: ${matches.length} carta(s) reconhecida(s)${noChamp}.` : 'Teste: nenhuma carta reconhecida. Veja o texto lido pelo OCR.', matches.length ? 'ok' : 'error');
   return { cards, ocrText: text };
@@ -454,49 +534,70 @@ async function snapshotMode(outDir) {
   await mainWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   await wait(2500);
   if (process.env.MAYHEM_SNAPSHOT_LIVE) {
-    startGameWatcher(); // usa a Live Client API de verdade (ou um servidor falso em testes)
-    await wait(6000);
+    // Usa a Live Client API de verdade (ou um servidor falso em testes) por N segundos,
+    // salvando um print da janela a cada 3 s para acompanhar o ciclo de partidas.
+    startGameWatcher();
+    const total = Number(process.env.MAYHEM_SNAPSHOT_LIVE) > 1 ? Number(process.env.MAYHEM_SNAPSHOT_LIVE) : 6;
+    for (let t = 3; t <= total; t += 3) {
+      await wait(3000);
+      fs.writeFileSync(path.join(outDir, `live-${String(t).padStart(2, '0')}s.png`), (await mainWin.webContents.capturePage()).toPNG());
+    }
   } else if (process.env.MAYHEM_SNAPSHOT_GAME) {
     state.inGame = true;
     state.gameMode = 'KIWI';
     sendGameState();
-    await loadChampion('Ahri');
+    await loadChampion(process.env.MAYHEM_SNAPSHOT_GAME === '1' ? 'Ahri' : process.env.MAYHEM_SNAPSHOT_GAME);
   }
   await wait(2500);
-  const cards = buildCards([
-    { id: '1053', score: 0.97, bbox: { x0: 330, y0: 520, x1: 560, y1: 550 } },
-    { id: '2132', score: 1, bbox: { x0: 840, y0: 520, x1: 1080, y1: 550 } },
-    { id: '1097', score: 0.9, bbox: { x0: 1350, y0: 520, x1: 1590, y1: 550 } },
-  ].filter((m) => store.augments[m.id]));
-  send('cards', { champion: state.champion, cards });
-  await wait(1500);
-  fs.writeFileSync(path.join(outDir, 'main.png'), (await mainWin.webContents.capturePage()).toPNG());
-
-  const ov = new BrowserWindow({ width: 1920, height: 1080, show: false, webPreferences: { preload: path.join(__dirname, 'preload.js'), offscreen: true } });
-  await ov.loadFile(path.join(__dirname, 'overlay', 'overlay.html'));
-  await ov.webContents.insertCSS('body{background:#3a3550 !important}');
-  ov.webContents.send('cards', { champion: state.champion, cards });
-  await wait(1200);
-  fs.writeFileSync(path.join(outDir, 'overlay.png'), (await ov.webContents.capturePage()).toPNG());
-
-  // Verifica o OCR de ponta a ponta (útil para testar o executável empacotado).
-  if (process.env.MAYHEM_SNAPSHOT_OCR) {
+  // Com MAYHEM_SNAPSHOT_OCR=<print>: roda o pipeline real (OCR -> matcher -> tracker) no print e desenha o
+  // overlay POR CIMA dele. Sem o print, usa cartas de exemplo nas posições medidas num print 1920x1080.
+  let cards;
+  let background = null;
+  const ocrFile = process.env.MAYHEM_SNAPSHOT_OCR;
+  if (ocrFile) {
     const result = { ok: false };
     try {
-      const full = await loadImageFile(process.env.MAYHEM_SNAPSHOT_OCR);
+      const full = await loadImageFile(ocrFile);
       const size = full.getSize();
       const reg = settings.region;
       const rect = { x: Math.round(size.width * reg.x), y: Math.round(size.height * reg.y), width: Math.round(size.width * reg.w), height: Math.round(size.height * reg.h) };
       const t = Date.now();
       const { lines } = await ocrImage(full.crop(rect), size.height);
       result.ms = Date.now() - t;
-      result.cards = matcher.match(lines, { frameHeight: size.height }).map((m) => store.augments[m.id].namePt);
+      const matches = matcher.match(lines, { frameHeight: size.height });
+      result.size = size;
+      result.cards = matches.map((m) => store.augments[m.id].namePt);
+      const tr = new CardTracker();
+      const r = tr.update(matchesToFrame(matches, rect.x, rect.y), size);
+      cards = buildCards(r.cards);
+      result.overlay = cards.map((c) => ({ name: c.name, tier: c.tier, rank: c.rank, x: Math.round(c.anchor.x), y: Math.round(c.anchor.y) }));
       result.ok = true;
+      background = full.toDataURL();
     } catch (e) {
       result.error = e.stack;
     }
     fs.writeFileSync(path.join(outDir, 'ocr.json'), JSON.stringify(result, null, 2));
   }
+  if (!cards) {
+    cards = buildCards([
+      { id: '1053', score: 0.97, cx: 591, cy: 444 },
+      { id: '2132', score: 1, cx: 959, cy: 444 },
+      { id: '1097', score: 0.9, cx: 1327, cy: 444 },
+    ].filter((m) => store.augments[m.id]));
+  }
+  send('cards', { champion: state.champion, cards });
+  await wait(1500);
+  fs.writeFileSync(path.join(outDir, 'main.png'), (await mainWin.webContents.capturePage()).toPNG());
+
+  const ov = new BrowserWindow({ width: 1920, height: 1080, show: false, useContentSize: true, enableLargerThanScreen: true, webPreferences: { preload: path.join(__dirname, 'preload.js'), offscreen: true } });
+  await ov.loadFile(path.join(__dirname, 'overlay', 'overlay.html'));
+  await ov.webContents.insertCSS(background
+    ? `body{background:url("${background}") 0 0 / 1920px 1080px no-repeat !important}`
+    : 'body{background:#3a3550 !important}');
+  ov.webContents.send('cards', { champion: state.champion || { name: '(sem partida)' }, cards, screenH: 1080 });
+  await wait(1200);
+  fs.writeFileSync(path.join(outDir, 'overlay.png'), (await ov.webContents.capturePage()).toPNG());
+
   if (ocrWorker) await ocrWorker.terminate().catch(() => {});
   app.exit(0);
 }

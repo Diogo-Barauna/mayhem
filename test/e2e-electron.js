@@ -1,5 +1,5 @@
-// Teste ponta a ponta com um print REAL da tela de cartas (test/fixtures/cartas-warwick-1080p.webp):
-// recorta a faixa padrão dos títulos, roda o OCR e confere as 3 cartas. Uso: npm run test:e2e
+// Teste ponta a ponta com prints REAIS da tela de cartas (test/fixtures/): recorta a faixa padrão dos
+// títulos, roda o OCR, passa pelo tracker e confere as 3 cartas de cada print. Uso: npm run test:e2e
 const { app, BrowserWindow, desktopCapturer, screen } = require('electron');
 const path = require('path');
 const os = require('os');
@@ -7,9 +7,14 @@ const fs = require('fs');
 const { DataStore } = require('../src/data');
 const { AugmentMatcher, normalize } = require('../src/matcher');
 const { createOcrWorker, recognize, upscaleFor, DEFAULT_REGION } = require('../src/ocr');
+const { CardTracker } = require('../src/tracker');
 
-const FIXTURE = path.join(__dirname, 'fixtures', 'cartas-warwick-1080p.webp');
-const EXPECTED = ['Transmutar: Prismático', 'Corpo Celestial', 'Recursão'];
+// Os prints do Vel'Koz têm os selos da versão antiga do overlay sobre os títulos: servem de teste de robustez.
+const FIXTURES = [
+  ['cartas-warwick-1080p.webp', ['Transmutar: Prismático', 'Corpo Celestial', 'Recursão']],
+  ['cartas-velkoz-1080p-a.webp', ['Aprimoramento – Fulgor', 'Transbordamento', 'Engenho do Encolhimento']],
+  ['cartas-velkoz-1080p-b.webp', ['Aprimoramento – Fulgor', 'Transbordamento', 'Engenho do Encolhimento']],
+];
 
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {}); // não sair ao fechar a janela auxiliar
@@ -32,19 +37,33 @@ app.whenReady().then(async () => {
     const store = new DataStore(path.join(tmp, 'cache'));
     await store.init();
     const matcher = new AugmentMatcher(store.augments);
-    const img = await loadImage(FIXTURE);
-    const sz = img.getSize();
-    const r = DEFAULT_REGION;
-    const crop = img.crop({ x: Math.round(sz.width * r.x), y: Math.round(sz.height * r.y), width: Math.round(sz.width * r.w), height: Math.round(sz.height * r.h) });
     const worker = await createOcrWorker(path.join(tmp, 'tessdata'));
-    await recognize(worker, crop, { scale: upscaleFor(sz.height) }); // aquecimento
-    const times = [];
-    let matches = [];
-    for (let i = 0; i < 3; i++) {
-      const t = Date.now();
-      const { lines } = await recognize(worker, crop, { scale: upscaleFor(sz.height) });
-      times.push(Date.now() - t);
-      matches = matcher.match(lines, { frameHeight: sz.height });
+    for (const [file, expected] of FIXTURES) {
+      const img = await loadImage(path.join(__dirname, 'fixtures', file));
+      const sz = img.getSize();
+      const r = DEFAULT_REGION;
+      const rect = { x: Math.round(sz.width * r.x), y: Math.round(sz.height * r.y), width: Math.round(sz.width * r.w), height: Math.round(sz.height * r.h) };
+      const crop = img.crop(rect);
+      await recognize(worker, crop, { scale: upscaleFor(sz.height) }); // aquecimento
+      const tracker = new CardTracker();
+      const times = [];
+      let tracked = null;
+      let partial = 0;
+      for (let i = 0; i < 3; i++) {
+        const t = Date.now();
+        const { lines } = await recognize(worker, crop, { scale: upscaleFor(sz.height) });
+        times.push(Date.now() - t);
+        const matches = matcher.match(lines, { frameHeight: sz.height });
+        partial += matches.filter((m) => m.partial).length;
+        tracked = tracker.update(matches.map((m) => ({ ...m, bbox: { x0: m.bbox.x0 + rect.x, y0: m.bbox.y0 + rect.y, x1: m.bbox.x1 + rect.x, y1: m.bbox.y1 + rect.y } })), sz);
+      }
+      const got = tracked.cards.map((c) => store.augments[c.id].namePt);
+      const ok = JSON.stringify(got.map(normalize)) === JSON.stringify(expected.map(normalize));
+      log(`${ok ? 'OK    ' : 'FALHOU'} ${file}: ${got.join(' | ')} · OCR ${times.join('/')} ms${partial ? ` · ${partial} por palavra única` : ''}`);
+      if (!ok) {
+        log('       esperado:', expected.join(' | '));
+        code = 1;
+      }
     }
     await worker.terminate();
 
@@ -52,15 +71,8 @@ app.whenReady().then(async () => {
     const d = screen.getPrimaryDisplay();
     const t0 = Date.now();
     await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: d.size.width * d.scaleFactor, height: d.size.height * d.scaleFactor } });
-    const capMs = Date.now() - t0;
-
-    const got = matches.map((m) => store.augments[m.id].namePt);
-    log(`OCR: ${times.join(' / ')} ms · captura de tela: ${capMs} ms`);
-    log('Cartas:', got.join(' | '));
-    if (JSON.stringify(got.map(normalize)) !== JSON.stringify(EXPECTED.map(normalize))) {
-      log('FALHOU: esperado', EXPECTED.join(' | '));
-      code = 1;
-    } else log('E2E OK');
+    log(`Captura de tela: ${Date.now() - t0} ms`);
+    log(code ? 'E2E FALHOU' : 'E2E OK');
   } catch (e) {
     log('ERRO', e.stack);
     code = 1;

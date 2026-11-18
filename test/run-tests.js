@@ -69,4 +69,20 @@ t('score combinado e tier', () => {
   assert.strictEqual(combineScore(null, null), null);
 });
 
-console.log(`\n${n} testes passaram.`);
+require('./tracker-tests')(t);
+
+// Testes assíncronos rodam em sequência depois dos síncronos.
+const asyncTests = [];
+require('./game-watcher-tests')(t, (name, fn) => asyncTests.push([name, fn]));
+
+(async () => {
+  for (const [name, fn] of asyncTests) {
+    await fn();
+    n++;
+    console.log('ok -', name);
+  }
+  console.log(`\n${n} testes passaram.`);
+})().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

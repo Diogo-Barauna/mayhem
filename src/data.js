@@ -14,6 +14,7 @@ const path = require('path');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
 const TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const FETCH_TIMEOUT_MS = 10000; // sem isso, um site que não responde trava a carga do campeão para sempre
 
 class DataStore {
   constructor(cacheDir) {
@@ -37,7 +38,10 @@ class DataStore {
       return type === 'json' ? JSON.parse(raw) : raw;
     }
     try {
-      const res = await fetch(url, { headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' } });
+      const res = await fetch(url, {
+        headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status} em ${url}`);
       const text = await res.text();
       const value = type === 'json' ? JSON.parse(text) : text;
