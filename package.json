@@ -1,0 +1,21 @@
+{
+  "name": "mayhem-augment-helper",
+  "version": "0.1.0",
+  "description": "Lê a tela no ARAM Mayhem e recomenda as melhores cartas (augments) para o seu campeão.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/run-tests.js",
+    "test:e2e": "electron test/e2e-electron.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "tesseract.js": "^6.0.1"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  }
+}

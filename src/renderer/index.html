@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'" />
+  <title>Mayhem Augment Helper</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">◆</span>
+      <div>
+        <h1>Mayhem Augment Helper</h1>
+        <small id="meta">Carregando dados…</small>
+      </div>
+    </div>
+    <div class="actions">
+      <span id="gameBadge" class="gbadge wait">Aguardando partida</span>
+      <button id="btnPause" disabled>⏸ Pausar</button>
+      <button id="btnTest" title="Testar o reconhecimento com um print da tela de cartas">Testar com print</button>
+      <button id="btnSettings" title="Configurações">⚙</button>
+    </div>
+  </header>
+
+  <div id="status" class="status">Iniciando…</div>
+
+  <main>
+    <section class="detail">
+      <div id="champ" class="champ empty">
+        <div class="pulse"></div>
+        <div>
+          <div class="name">Aguardando uma partida de ARAM Mayhem…</div>
+          <small>Deixe o app aberto. Quando a partida carregar, o campeão é detectado sozinho e as cartas passam a ser lidas.</small>
+        </div>
+      </div>
+
+      <div id="lastCards" class="last hidden">
+        <h3>Últimas cartas detectadas</h3>
+        <div id="lastCardsList" class="cards"></div>
+      </div>
+
+      <div class="list-head">
+        <h3>Melhores augments para o campeão</h3>
+        <input id="filter" type="search" placeholder="Filtrar…" />
+      </div>
+      <ol id="augList" class="auglist"></ol>
+    </section>
+  </main>
+
+  <dialog id="settingsDlg">
+    <form method="dialog">
+      <h2>Configurações</h2>
+      <label>Monitor do jogo
+        <select id="setDisplay"></select>
+      </label>
+      <label>Idioma do cliente do LoL
+        <select id="setLang">
+          <option value="por">Português</option>
+          <option value="eng">English</option>
+          <option value="por+eng">Português + English (mais lento)</option>
+        </select>
+      </label>
+      <label>Intervalo entre leituras (ms)
+        <input id="setInterval" type="number" min="0" max="5000" step="50" />
+      </label>
+      <fieldset>
+        <legend>Faixa da tela com os títulos das cartas (% da tela)</legend>
+        <div class="row4">
+          <label>X <input id="regX" type="number" min="0" max="100" /></label>
+          <label>Y <input id="regY" type="number" min="0" max="100" /></label>
+          <label>Largura <input id="regW" type="number" min="1" max="100" /></label>
+          <label>Altura <input id="regH" type="number" min="1" max="100" /></label>
+        </div>
+      </fieldset>
+      <label class="check"><input id="setDebug" type="checkbox" /> Salvar a última captura (para ajustar a área)</label>
+      <div class="dlg-actions">
+        <button type="button" id="btnFolder">Abrir pasta de dados</button>
+        <button type="button" id="btnRefresh">Atualizar dados agora</button>
+        <span class="spacer"></span>
+        <button value="cancel">Cancelar</button>
+        <button id="btnSave" value="save" class="primary">Salvar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="testDlg">
+    <form method="dialog">
+      <h2>Resultado do teste</h2>
+      <div id="testCards" class="cards"></div>
+      <details>
+        <summary>Texto lido pelo OCR</summary>
+        <pre id="testText"></pre>
+      </details>
+      <div class="dlg-actions"><span class="spacer"></span><button class="primary">Fechar</button></div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
